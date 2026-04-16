@@ -90,9 +90,22 @@ def main():
         dst = os.path.join(out_dir, "previews", f"{m['name']}.webp")
         if os.path.exists(src):
             shutil.copy2(src, dst)
-            print(f"  copied {m['name']}.webp")
+            print(f"  preview: {m['name']}.webp")
         else:
-            print(f"  missing {m['name']}.webp")
+            print(f"  missing preview: {m['name']}.webp")
+
+    # ── Detail images (high-res, loaded on demand) ──
+    detail_dir = os.path.join(PROJECT_DIR, "ProcessedImage", "detail")
+    os.makedirs(os.path.join(out_dir, "details"), exist_ok=True)
+    for m in web_meta:
+        src = os.path.join(detail_dir, f"{m['name']}.webp")
+        dst = os.path.join(out_dir, "details", f"{m['name']}.webp")
+        if os.path.exists(src):
+            shutil.copy2(src, dst)
+            sz = os.path.getsize(dst) / 1024 / 1024
+            print(f"  detail: {m['name']}.webp ({sz:.1f}MB)")
+        else:
+            print(f"  missing detail: {m['name']}.webp")
 
     print("Done!")
 
