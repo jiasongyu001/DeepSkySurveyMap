@@ -565,7 +565,7 @@ class MainWindow(QMainWindow):
         self.coord_label.setObjectName("infoLabel")
         pl.addWidget(self.coord_label)
 
-        self.info_label = QLabel("点击图片查看详情")
+        self.info_label = QLabel("单击图片切换高低分辨率")
         self.info_label.setObjectName("infoLabel")
         self.info_label.setWordWrap(True)
         self.info_label.setMinimumHeight(140)
