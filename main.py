@@ -292,7 +292,8 @@ class SkyMapWidget(QWidget):
             font.setPixelSize(14)
             p.setFont(font)
             fm = p.fontMetrics()
-            text = self._hover_name
+            parts = self._hover_name.rsplit("_", 3)
+            text = parts[0] if len(parts) == 4 else self._hover_name
             tw = fm.horizontalAdvance(text) + 12
             th = fm.height() + 6
             p.setBrush(QColor(0, 0, 0, 180))
@@ -650,6 +651,19 @@ class MainWindow(QMainWindow):
             f"RA: {h:02d}h {m:02d}m {s:04.1f}s   Dec: {sign}{d:02d}\u00b0 {dm:02d}'"
         )
 
+    @staticmethod
+    def _parse_filename(name):
+        """Parse 'Target_Fratio_Exposure_Author' naming convention."""
+        parts = name.rsplit("_", 3)
+        if len(parts) == 4:
+            return {
+                "target": parts[0],
+                "telescope": parts[1],
+                "exposure": parts[2] + "min",
+                "author": parts[3],
+            }
+        return {"target": name, "telescope": "", "exposure": "", "author": ""}
+
     def _on_click(self, md):
         name = md["name"]
         if self.map_view._detail_name == name:
@@ -667,16 +681,23 @@ class MainWindow(QMainWindow):
             else:
                 self._log(f"[{name}] 详情图不存在: {detail_path}")
 
+        info = self._parse_filename(name)
         objs = ", ".join(md.get("objects_in_field", [])) or "无"
-        self.info_label.setText(
-            f"{md['filename']}\n"
-            f"RA: {md['ra']:.4f}\u00b0  Dec: {md['dec']:.4f}\u00b0\n"
-            f"视场: {md['field_w_deg']:.2f}\u00b0 x {md['field_h_deg']:.2f}\u00b0\n"
-            f"像素比例: {md['pixscale']:.2f}\"/px\n"
-            f"方位角: {md.get('orientation', 0):.1f}\u00b0\n"
-            f"天体: {objs}\n"
-            f"处理: {md.get('processed_time', '')}"
-        )
+        lines = [f"目标: {info['target']}"]
+        if info["telescope"]:
+            lines.append(f"望远镜: {info['telescope']}")
+        if info["exposure"]:
+            lines.append(f"单帧曝光: {info['exposure']}")
+        if info["author"]:
+            lines.append(f"作者: {info['author']}")
+        lines += [
+            f"RA: {md['ra']:.4f}\u00b0  Dec: {md['dec']:.4f}\u00b0",
+            f"视场: {md['field_w_deg']:.2f}\u00b0 x {md['field_h_deg']:.2f}\u00b0",
+            f"像素比例: {md['pixscale']:.2f}\"/px",
+            f"方位角: {md.get('orientation', 0):.1f}\u00b0",
+            f"天体: {objs}",
+        ]
+        self.info_label.setText("\n".join(lines))
 
     def _process(self):
         if not os.path.isdir(REF_DIR):
