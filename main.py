@@ -659,7 +659,7 @@ class MainWindow(QMainWindow):
             return {
                 "target": parts[0],
                 "telescope": parts[1],
-                "exposure": parts[2] + "min",
+                "exposure": parts[2] + "h",
                 "author": parts[3],
             }
         return {"target": name, "telescope": "", "exposure": "", "author": ""}
@@ -685,9 +685,9 @@ class MainWindow(QMainWindow):
         objs = ", ".join(md.get("objects_in_field", [])) or "无"
         lines = [f"目标: {info['target']}"]
         if info["telescope"]:
-            lines.append(f"望远镜: {info['telescope']}")
+            lines.append(f"望远镜焦比: {info['telescope']}")
         if info["exposure"]:
-            lines.append(f"单帧曝光: {info['exposure']}")
+            lines.append(f"单块曝光时间: {info['exposure']}")
         if info["author"]:
             lines.append(f"作者: {info['author']}")
         lines += [
