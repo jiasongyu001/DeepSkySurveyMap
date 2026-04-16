@@ -260,6 +260,41 @@ def generate_scaled_image(img, original_pixscale, target_pixscale, max_dim=None)
     return img.resize((new_w, new_h), Image.LANCZOS)
 
 
+def save_webp_capped(img, path, max_bytes, quality_start=90, quality_min=40):
+    """Save image as WebP under max_bytes.
+    Strategy: first reduce quality (90→40), then shrink resolution in 10% steps.
+    Returns (quality, file_size, final_width, final_height)."""
+    cur = img
+    q = quality_start
+    # Phase 1: reduce quality
+    while q >= quality_min:
+        buf = io.BytesIO()
+        cur.save(buf, "WEBP", quality=q)
+        if buf.tell() <= max_bytes:
+            with open(path, "wb") as f:
+                f.write(buf.getvalue())
+            return q, buf.tell(), cur.width, cur.height
+        q -= 5
+    # Phase 2: shrink resolution at quality_min until under budget
+    q = quality_min
+    for _ in range(20):
+        new_w = max(1, int(cur.width * 0.9))
+        new_h = max(1, int(cur.height * 0.9))
+        cur = img.resize((new_w, new_h), Image.LANCZOS)
+        buf = io.BytesIO()
+        cur.save(buf, "WEBP", quality=q)
+        if buf.tell() <= max_bytes:
+            with open(path, "wb") as f:
+                f.write(buf.getvalue())
+            return q, buf.tell(), cur.width, cur.height
+    # Fallback
+    buf = io.BytesIO()
+    cur.save(buf, "WEBP", quality=quality_min)
+    with open(path, "wb") as f:
+        f.write(buf.getvalue())
+    return quality_min, buf.tell(), cur.width, cur.height
+
+
 def compute_corners_wcs(wcs_fits_bytes, img_w=None, img_h=None):
     """
     Compute RA/Dec of 4 image corners using the WCS solution from
@@ -335,15 +370,15 @@ def process_image(file_path, output_dir, client, callback=None):
     field_w = img.width * pixscale / 3600.0
     field_h = img.height * pixscale / 3600.0
 
-    # Generate preview (20"/px) — capped at WebP limit
+    # Generate preview (20"/px) — capped at WebP limit, file ≤ 2MB
     preview = generate_scaled_image(img, pixscale, PREVIEW_SCALE, max_dim=WEBP_MAX_DIM)
     preview_path = os.path.join(preview_dir, f"{name}.webp")
-    preview.save(preview_path, "WEBP", quality=85)
+    pq, psz, pw, ph = save_webp_capped(preview, preview_path, max_bytes=2 * 1024 * 1024)
 
-    # Generate detail (5"/px) — capped at QPixmap limit
+    # Generate detail (5"/px) — capped at QPixmap limit, file ≤ 5MB
     detail = generate_scaled_image(img, pixscale, DETAIL_SCALE, max_dim=QPIXMAP_MAX_DIM)
     detail_path = os.path.join(detail_dir, f"{name}.webp")
-    detail.save(detail_path, "WEBP", quality=90)
+    dq, dsz, dw, dh = save_webp_capped(detail, detail_path, max_bytes=5 * 1024 * 1024)
 
     # Save WCS FITS file for future reference
     wcs_path = os.path.join(wcs_dir, f"{name}.wcs")
@@ -355,8 +390,8 @@ def process_image(file_path, output_dir, client, callback=None):
 
     if callback:
         callback(
-            f"[{name}] 预览 ({preview.width}×{preview.height}) "
-            f"详情 ({detail.width}×{detail.height}) 已保存"
+            f"[{name}] 预览 {pw}×{ph} q={pq} {psz/1024:.0f}KB | "
+            f"详情 {dw}×{dh} q={dq} {dsz/1024:.0f}KB"
         )
 
     return {
@@ -376,10 +411,10 @@ def process_image(file_path, output_dir, client, callback=None):
         "field_h_deg": field_h,
         "field_area_sq_deg": field_w * field_h,
         "corners": corners,
-        "preview_w": preview.width,
-        "preview_h": preview.height,
-        "detail_w": detail.width,
-        "detail_h": detail.height,
+        "preview_w": pw,
+        "preview_h": ph,
+        "detail_w": dw,
+        "detail_h": dh,
         "objects_in_field": result.get("objects_in_field", []),
         "processed_time": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
