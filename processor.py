@@ -40,19 +40,22 @@ SUPPORTED_EXTENSIONS = {
 #  Astrometry.net API Client
 # ═══════════════════════════════════════════════════════════════════════
 def _prepare_upload(file_path):
-    """Downscale image for faster upload. Returns (bytes, filename)."""
+    """Downscale image for faster upload. Returns (bytes, filename).
+    Uses JPEG draft mode to avoid loading full-res into memory."""
     ext = Path(file_path).suffix.lower()
     if ext in {".fits", ".fit", ".fts"}:
         with open(file_path, "rb") as f:
             return f.read(), os.path.basename(file_path)
     try:
         img = Image.open(file_path)
-        w, h = img.size
-        if max(w, h) > UPLOAD_MAX_DIM:
-            ratio = UPLOAD_MAX_DIM / max(w, h)
-            img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+        # JPEG draft mode: ask decoder to load at reduced resolution directly
+        # This is ~8x faster and uses ~1/8 memory for very large images
+        if ext in {".jpg", ".jpeg"} and max(img.size) > UPLOAD_MAX_DIM * 2:
+            img.draft("RGB", (UPLOAD_MAX_DIM, UPLOAD_MAX_DIM))
+            img.load()
+        img.thumbnail((UPLOAD_MAX_DIM, UPLOAD_MAX_DIM), Image.LANCZOS)
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85)
+        img.save(buf, format="JPEG", quality=70)
         return buf.getvalue(), Path(file_path).stem + ".jpg"
     except Exception:
         with open(file_path, "rb") as f:
@@ -210,8 +213,11 @@ def file_hash(path):
     return h.hexdigest()
 
 
-def load_image(path):
-    """Load image as PIL RGB Image, handling FITS if needed."""
+def load_image(path, max_dim=None):
+    """Load image as PIL RGB Image, handling FITS if needed.
+    Returns (img, original_w, original_h).
+    For JPEG, uses draft mode when image is much larger than max_dim
+    to avoid loading full resolution into memory."""
     ext = Path(path).suffix.lower()
     if ext in {".fits", ".fit", ".fts"}:
         from astropy.io import fits
@@ -231,11 +237,13 @@ def load_image(path):
                 data = data[0]
 
         if data.ndim == 2:
+            ow, oh = data.shape[1], data.shape[0]
             vmin, vmax = np.percentile(data[np.isfinite(data)], [1, 99])
             data = np.clip((data - vmin) / (vmax - vmin + 1e-10), 0, 1)
             data = (data * 255).astype(np.uint8)
-            return Image.fromarray(data, mode="L").convert("RGB")
+            return Image.fromarray(data, mode="L").convert("RGB"), ow, oh
         else:
+            ow, oh = data.shape[1], data.shape[0]
             for ch in range(data.shape[2]):
                 c = data[:, :, ch]
                 finite = c[np.isfinite(c)]
@@ -244,9 +252,15 @@ def load_image(path):
                 vmin, vmax = np.percentile(finite, [1, 99])
                 data[:, :, ch] = np.clip((c - vmin) / (vmax - vmin + 1e-10), 0, 1)
             data = (data * 255).astype(np.uint8)
-            return Image.fromarray(data, mode="RGB")
+            return Image.fromarray(data, mode="RGB"), ow, oh
     else:
-        return Image.open(path).convert("RGB")
+        img = Image.open(path)
+        ow, oh = img.size  # original dimensions from header (no pixel decode yet)
+        # JPEG draft: decode at reduced resolution when much larger than needed
+        if max_dim and ext in {".jpg", ".jpeg"} and max(ow, oh) > max_dim * 2:
+            img.draft("RGB", (max_dim, max_dim))
+        img = img.convert("RGB")
+        return img, ow, oh
 
 
 def generate_scaled_image(img, original_pixscale, target_pixscale, max_dim=None):
@@ -364,20 +378,23 @@ def process_image(file_path, output_dir, client, callback=None):
             f"[{name}] 解析成功! RA={result['ra']:.4f}° Dec={result['dec']:.4f}°"
         )
 
-    # Load original image
-    img = load_image(file_path)
+    # Load image (draft mode for large JPEGs — only decode needed resolution)
+    img, orig_w, orig_h = load_image(file_path, max_dim=QPIXMAP_MAX_DIM)
     pixscale = result["pixscale"]
     orientation = result.get("orientation", 0)
-    field_w = img.width * pixscale / 3600.0
-    field_h = img.height * pixscale / 3600.0
+    # Field dimensions from ORIGINAL size (before any draft reduction)
+    field_w = orig_w * pixscale / 3600.0
+    field_h = orig_h * pixscale / 3600.0
+    # Effective pixscale of the loaded (possibly draft-reduced) image
+    eff_pixscale = pixscale * orig_w / img.width
 
     # Generate preview (20"/px) — capped at WebP limit, file ≤ 2MB
-    preview = generate_scaled_image(img, pixscale, PREVIEW_SCALE, max_dim=WEBP_MAX_DIM)
+    preview = generate_scaled_image(img, eff_pixscale, PREVIEW_SCALE, max_dim=WEBP_MAX_DIM)
     preview_path = os.path.join(preview_dir, f"{name}.webp")
     pq, psz, pw, ph = save_webp_capped(preview, preview_path, max_bytes=2 * 1024 * 1024)
 
     # Generate detail (5"/px) — capped at QPixmap limit, file ≤ 5MB
-    detail = generate_scaled_image(img, pixscale, DETAIL_SCALE, max_dim=QPIXMAP_MAX_DIM)
+    detail = generate_scaled_image(img, eff_pixscale, DETAIL_SCALE, max_dim=QPIXMAP_MAX_DIM)
     detail_path = os.path.join(detail_dir, f"{name}.webp")
     dq, dsz, dw, dh = save_webp_capped(detail, detail_path, max_bytes=5 * 1024 * 1024)
 
@@ -386,8 +403,8 @@ def process_image(file_path, output_dir, client, callback=None):
     with open(wcs_path, "wb") as wf:
         wf.write(result["wcs_fits"])
 
-    # Compute 4-corner sky coordinates using WCS
-    corners = compute_corners_wcs(result["wcs_fits"], img.width, img.height)
+    # Compute 4-corner sky coordinates using ORIGINAL dimensions
+    corners = compute_corners_wcs(result["wcs_fits"], orig_w, orig_h)
 
     if callback:
         callback(
@@ -406,8 +423,8 @@ def process_image(file_path, output_dir, client, callback=None):
         "pixscale": pixscale,
         "radius": result.get("radius"),
         "parity": result.get("parity", 0),
-        "img_w": img.width,
-        "img_h": img.height,
+        "img_w": orig_w,
+        "img_h": orig_h,
         "field_w_deg": field_w,
         "field_h_deg": field_h,
         "field_area_sq_deg": field_w * field_h,
