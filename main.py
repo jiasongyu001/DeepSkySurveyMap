@@ -659,7 +659,7 @@ class MainWindow(QMainWindow):
             return {
                 "target": parts[0],
                 "telescope": parts[1],
-                "exposure": parts[2] + "h",
+                "exposure": parts[2] if parts[2] == "?" else parts[2] + "h",
                 "author": parts[3],
             }
         return {"target": name, "telescope": "", "exposure": "", "author": ""}

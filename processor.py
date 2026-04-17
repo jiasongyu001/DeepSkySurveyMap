@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+Image.MAX_IMAGE_PIXELS = None  # astro images can be very large (>100 Mpx)
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
